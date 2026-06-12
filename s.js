@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  var VERSION = "1.4.1";
+  var VERSION = "1.5.0";
 
   if (window.__smileReactionsPluginVersion === VERSION) return;
   window.__smileReactionsPluginVersion = VERSION;
@@ -20,9 +20,9 @@
     fontRatio: 0.68,
     fontFitDivisor: 11.6,
     minFont: 10,
-    compactWidth: 128,
-    tightWidth: 108,
-    iconsWidth: 82
+    compactWidth: 120,
+    tightWidth: 96,
+    iconsWidth: 74
   };
 
   var manifest = {
@@ -120,10 +120,10 @@
 
     style.dataset.version = VERSION;
     style.textContent = [
-      ".card__smile-reactions{position:absolute;left:var(--sr-left,.35em);bottom:var(--sr-bottom,.3em);height:var(--sr-height,1.8em);z-index:2;display:flex;align-items:stretch;justify-content:space-between;gap:var(--sr-gap,.12em);overflow:hidden;pointer-events:none;}",
-      ".card__smile-reaction{box-sizing:border-box;min-width:0;flex:1 1 0;padding:0 var(--sr-pad,.18em);border-radius:1em;background:rgba(0,0,0,.5);color:#fff;display:flex;align-items:center;justify-content:center;gap:var(--sr-inner-gap,.08em);font-size:var(--sr-font,1.08em);font-weight:700;line-height:normal;box-shadow:0 .1em .45em rgba(0,0,0,.22);}",
+      ".card__smile-reactions{box-sizing:border-box;position:absolute;left:var(--sr-left,.35em);bottom:var(--sr-bottom,.3em);height:var(--sr-height,1.8em);z-index:2;display:flex;align-items:center;justify-content:space-evenly;gap:var(--sr-gap,.12em);padding:0 var(--sr-pad,.24em);border-radius:999px;background:rgba(0,0,0,.56);box-shadow:0 .1em .45em rgba(0,0,0,.22);overflow:hidden;pointer-events:none;color:#fff;font-size:var(--sr-font,1.08em);font-weight:700;line-height:normal;}",
+      ".card__smile-reaction{box-sizing:border-box;min-width:0;flex:0 1 auto;padding:0;display:flex;align-items:center;justify-content:center;gap:var(--sr-inner-gap,.08em);white-space:nowrap;line-height:normal;}",
       ".card__smile-reaction-emoji{font-size:.88em;line-height:normal;display:block;margin-top:-.04em;flex:0 0 auto;}",
-      ".card__smile-reaction-count{font-size:.76em;line-height:normal;display:block;min-width:0;overflow:hidden;text-overflow:clip;}",
+      ".card__smile-reaction-count{font-size:.74em;line-height:normal;display:block;min-width:0;overflow:hidden;text-overflow:clip;}",
       ".card__smile-reactions.is--compact .card__smile-reaction:nth-child(3) .card__smile-reaction-count{display:none;}",
       ".card__smile-reactions.is--tight .card__smile-reaction:nth-child(n+2) .card__smile-reaction-count{display:none;}",
       ".card__smile-reactions.is--icons .card__smile-reaction-count{display:none;}"
