@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  var VERSION = "1.5.0";
+  var VERSION = "1.5.1";
 
   if (window.__smileReactionsPluginVersion === VERSION) return;
   window.__smileReactionsPluginVersion = VERSION;
@@ -63,6 +63,65 @@
     return value > 999 ? Math.round(value / 100) / 10 + "K" : String(value);
   }
 
+  function protocol() {
+    if (window.Lampa && Lampa.Utils && Lampa.Utils.protocol) {
+      return Lampa.Utils.protocol();
+    }
+
+    return location.protocol === "https:" ? "https://" : "http://";
+  }
+
+  function cubDomain() {
+    var saved = "";
+
+    try {
+      saved = localStorage.getItem("cub_domain") || "";
+    } catch (e) {}
+
+    if (saved) return saved;
+    if (window.Lampa && Lampa.Manifest && Lampa.Manifest.cub_domain) return Lampa.Manifest.cub_domain;
+    if (window.lampa_settings && window.lampa_settings.cub_domain) return window.lampa_settings.cub_domain;
+
+    return "cub.watch";
+  }
+
+  function existingReactionIcon(type) {
+    var icon = document.querySelector(".reaction--" + type + " .reaction__icon");
+
+    return icon && icon.getAttribute("src");
+  }
+
+  function reactionIconUrl(type) {
+    return existingReactionIcon(type) || protocol() + cubDomain() + "/img/reactions/" + type + ".svg";
+  }
+
+  function loadReactionIcon(img, item) {
+    var failed = false;
+    var show = function () {
+      img.style.opacity = "1";
+    };
+    var fallback = function () {
+      if (failed) return;
+
+      failed = true;
+      if (img.parentNode) {
+        img.parentNode.replaceChild(document.createTextNode(item.icon), img);
+      }
+    };
+
+    img.alt = item.label;
+    img.src = reactionIconUrl(item.type);
+    img.style.opacity = "0";
+
+    if (window.Lampa && Lampa.Utils && Lampa.Utils.imgLoad) {
+      Lampa.Utils.imgLoad(img, img.src, show, fallback);
+      return;
+    }
+
+    img.onload = show;
+    img.onerror = fallback;
+  }
+
   function countFor(key, item) {
     var range = item.max - item.min + 1;
 
@@ -122,7 +181,7 @@
     style.textContent = [
       ".card__smile-reactions{box-sizing:border-box;position:absolute;left:var(--sr-left,.35em);bottom:var(--sr-bottom,.3em);height:var(--sr-height,1.8em);z-index:2;display:flex;align-items:center;justify-content:space-evenly;gap:var(--sr-gap,.12em);padding:0 var(--sr-pad,.24em);border-radius:999px;background:rgba(0,0,0,.56);box-shadow:0 .1em .45em rgba(0,0,0,.22);overflow:hidden;pointer-events:none;color:#fff;font-size:var(--sr-font,1.08em);font-weight:700;line-height:normal;}",
       ".card__smile-reaction{box-sizing:border-box;min-width:0;flex:0 1 auto;padding:0;display:flex;align-items:center;justify-content:center;gap:var(--sr-inner-gap,.08em);white-space:nowrap;line-height:normal;}",
-      ".card__smile-reaction-emoji{font-size:.88em;line-height:normal;display:block;margin-top:-.04em;flex:0 0 auto;}",
+      ".card__smile-reaction-emoji{width:.92em;height:.92em;line-height:normal;display:block;flex:0 0 auto;object-fit:contain;transition:opacity .15s;}",
       ".card__smile-reaction-count{font-size:.74em;line-height:normal;display:block;min-width:0;overflow:hidden;text-overflow:clip;}",
       ".card__smile-reactions.is--compact .card__smile-reaction:nth-child(3) .card__smile-reaction-count{display:none;}",
       ".card__smile-reactions.is--tight .card__smile-reaction:nth-child(n+2) .card__smile-reaction-count{display:none;}",
@@ -194,14 +253,14 @@
     items.forEach(function (record) {
       var item = record.item;
       var chip = document.createElement("div");
-      var icon = document.createElement("span");
+      var icon = document.createElement("img");
       var count = document.createElement("span");
 
       chip.className = "card__smile-reaction card__smile-reaction--" + item.type;
       chip.setAttribute("title", item.label + ": " + record.count);
 
       icon.className = "card__smile-reaction-emoji";
-      icon.textContent = item.icon;
+      loadReactionIcon(icon, item);
 
       count.className = "card__smile-reaction-count";
       count.textContent = numberShort(record.count);
