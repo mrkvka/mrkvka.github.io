@@ -1,68 +1,62 @@
 (function () {
   "use strict";
 
-  // Capture before any async code — document.currentScript is only available
-  // synchronously during script execution.
-  var _scriptSrc = document.currentScript ? document.currentScript.src : '';
-
-  var VERSION = "1.6.6";
+  var VERSION     = "1.7.0";
   var PLUGIN_NAME = "Смайлики рейтинга";
+  var PLUGIN_ID   = "smile-reactions";
 
+  // Prevent double-loading the same version.
   if (window.__smileReactionsPluginVersion === VERSION) return;
   window.__smileReactionsPluginVersion = VERSION;
-  window.__smileReactionsPluginLoaded = true;
 
-  var PLUGIN_ID = "smile-reactions";
-  var observerStarted = false;
-  var manifestReady = false;
-  var resizeBound = false;
+  // URLs this plugin is served from (used to identify our entry in the
+  // plugins list when document.currentScript is unavailable — async scripts).
+  var PLUGIN_URLS = [
+    "https://mrkvka.github.io/s.js",
+    "http://mrkvka.github.io/s.js"
+  ];
 
   var manifest = {
-    type: "other",
-    version: VERSION,
-    name: PLUGIN_NAME,
+    type:        "other",
+    version:     VERSION,
+    name:        PLUGIN_NAME,
     description: "Добавляет смайлики с реакциями на постеры в лентах, категориях и поиске.",
-    component: "smile_reactions"
+    component:   "smile_reactions"
   };
-
-  // Early Lampa.Manifest.plugins registration (does NOT set manifestReady so
-  // that start() still calls waitManifest() → setManifest() → updatePluginEntry()).
-  if (window.Lampa && Lampa.Manifest) {
-    try { Lampa.Manifest.plugins = manifest; } catch (e) {}
-  }
 
   var LAYOUT = {
-    leftRatio: 0.03,
+    leftRatio:      0.03,
     gapToVoteRatio: 0.022,
-    gapRatio: 0.014,
-    heightRatio: 1.25,
-    fontRatio: 0.9,
+    gapRatio:       0.014,
+    heightRatio:    1.25,
+    fontRatio:      0.9,
     fontFitDivisor: 9.0,
-    minFont: 12,
-    compactWidth: 100,
-    tightWidth: 76,
-    iconsWidth: 56
+    minFont:        12,
+    compactWidth:   100,
+    tightWidth:     76,
+    iconsWidth:     56
   };
 
-  var POPULAR_ITEMS = [
-    { type: "fire", icon: "\uD83D\uDD25", label: "Огонь", min: 180, max: 560 },
-    { type: "nice", icon: "\uD83D\uDC4D", label: "Нравится", min: 55, max: 190 },
-    { type: "shit", icon: "\uD83D\uDCA9", label: "Так себе", min: 12, max: 88 }
+  var REACTION_ITEMS = [
+    { type: "fire", icon: "\uD83D\uDD25", label: "Огонь",    min: 180, max: 560 },
+    { type: "nice", icon: "\uD83D\uDC4D", label: "Нравится", min: 55,  max: 190 },
+    { type: "shit", icon: "\uD83D\uDCA9", label: "Так себе", min: 12,  max: 88  }
   ];
 
-  var FALLBACK_ITEMS = [
-    { type: "think", icon: "\uD83E\uDD14", label: "Задумался", min: 18, max: 120 },
-    { type: "bore", icon: "\uD83D\uDE34", label: "Скучно", min: 6, max: 74 }
-  ];
+  var observerStarted = false;
+  var manifestReady   = false;
+  var resizeBound     = false;
+
+  // ---------------------------------------------------------------------------
+  // Utilities
+  // ---------------------------------------------------------------------------
 
   function hash(value) {
     var result = 2166136261;
-
     for (var i = 0; i < value.length; i++) {
       result ^= value.charCodeAt(i);
       result += (result << 1) + (result << 4) + (result << 7) + (result << 8) + (result << 24);
     }
-
     return result >>> 0;
   }
 
@@ -70,7 +64,6 @@
     if (window.Lampa && Lampa.Utils && Lampa.Utils.bigNumberToShort) {
       return Lampa.Utils.bigNumberToShort(value);
     }
-
     return value > 999 ? Math.round(value / 100) / 10 + "K" : String(value);
   }
 
@@ -78,27 +71,24 @@
     if (window.Lampa && Lampa.Utils && Lampa.Utils.protocol) {
       return Lampa.Utils.protocol();
     }
-
     return location.protocol === "https:" ? "https://" : "http://";
   }
 
   function cubDomain() {
     var saved = "";
-
-    try {
-      saved = localStorage.getItem("cub_domain") || "";
-    } catch (e) {}
-
+    try { saved = localStorage.getItem("cub_domain") || ""; } catch (e) {}
     if (saved) return saved;
     if (window.Lampa && Lampa.Manifest && Lampa.Manifest.cub_domain) return Lampa.Manifest.cub_domain;
     if (window.lampa_settings && window.lampa_settings.cub_domain) return window.lampa_settings.cub_domain;
-
     return "cub.watch";
   }
 
+  // ---------------------------------------------------------------------------
+  // Reaction icons
+  // ---------------------------------------------------------------------------
+
   function existingReactionIcon(type) {
     var icon = document.querySelector(".reaction--" + type + " .reaction__icon");
-
     return icon && icon.getAttribute("src");
   }
 
@@ -108,16 +98,11 @@
 
   function loadReactionIcon(img, item) {
     var failed = false;
-    var show = function () {
-      img.style.opacity = "1";
-    };
+    var show = function () { img.style.opacity = "1"; };
     var fallback = function () {
       if (failed) return;
-
       failed = true;
-      if (img.parentNode) {
-        img.parentNode.replaceChild(document.createTextNode(item.icon), img);
-      }
+      if (img.parentNode) img.parentNode.replaceChild(document.createTextNode(item.icon), img);
     };
 
     img.alt = item.label;
@@ -129,50 +114,42 @@
       return;
     }
 
-    img.onload = show;
+    img.onload  = show;
     img.onerror = fallback;
   }
 
-  function countFor(key, item) {
-    var range = item.max - item.min + 1;
+  // ---------------------------------------------------------------------------
+  // Reaction counts (deterministic pseudo-random based on card key)
+  // ---------------------------------------------------------------------------
 
-    return item.min + hash(key + ":" + item.type) % range;
+  function countFor(key, item) {
+    return item.min + hash(key + ":" + item.type) % (item.max - item.min + 1);
   }
 
   function topItems(key) {
-    var items = POPULAR_ITEMS.map(function (item) {
-      return {
-        item: item,
-        count: countFor(key, item)
-      };
-    });
-
-    if (items.length < 3) {
-      items = items.concat(FALLBACK_ITEMS.map(function (item) {
-        return {
-          item: item,
-          count: countFor(key, item)
-        };
-      }));
-    }
-
-    return items.sort(function (a, b) {
+    return REACTION_ITEMS.map(function (item) {
+      return { item: item, count: countFor(key, item) };
+    }).sort(function (a, b) {
       return b.count - a.count;
-    }).slice(0, 3);
+    });
   }
+
+  // ---------------------------------------------------------------------------
+  // Card rendering
+  // ---------------------------------------------------------------------------
 
   function gridCardKey(card) {
     var title = card.querySelector(".card__title");
-    var age = card.querySelector(".card__age");
-    var vote = card.querySelector(".card__vote");
+    var age   = card.querySelector(".card__age");
+    var vote  = card.querySelector(".card__vote");
     var image = card.querySelector(".card__img");
 
     return [
       location.pathname,
       location.hash,
       title ? title.textContent.trim() : "",
-      age ? age.textContent.trim() : "",
-      vote ? vote.textContent.trim() : "",
+      age   ? age.textContent.trim()   : "",
+      vote  ? vote.textContent.trim()  : "",
       image ? image.getAttribute("src") || "" : ""
     ].join("|");
   }
@@ -206,30 +183,29 @@
 
     if (!viewRect.width || !voteRect.width) return;
 
-    var left = Math.max(4, Math.round(viewRect.width * LAYOUT.leftRatio));
-    var gapToVote = Math.max(4, Math.round(viewRect.width * LAYOUT.gapToVoteRatio));
-    var gap = Math.max(2, Math.round(viewRect.width * LAYOUT.gapRatio));
-    var right = Math.max(0, Math.round(viewRect.right - voteRect.left + gapToVote));
-    var available = Math.max(0, Math.round(viewRect.width - left - right));
-    var voteHeight = Math.max(1, voteRect.height);
-    var height = Math.max(14, Math.round(voteHeight * LAYOUT.heightRatio));
-    var center = voteRect.top + voteHeight / 2;
-    var bottom = Math.max(0, Math.round(viewRect.bottom - center - height / 2));
-    var voteFont = parseFloat(getComputedStyle(vote).fontSize) || 20;
-    var font = Math.max(LAYOUT.minFont, Math.min(voteFont * LAYOUT.fontRatio, available / LAYOUT.fontFitDivisor));
-    var pad = Math.max(4, Math.min(12, available / 26));
+    var left      = Math.max(4,  Math.round(viewRect.width * LAYOUT.leftRatio));
+    var gapToVote = Math.max(4,  Math.round(viewRect.width * LAYOUT.gapToVoteRatio));
+    var gap       = Math.max(2,  Math.round(viewRect.width * LAYOUT.gapRatio));
+    var right     = Math.max(0,  Math.round(viewRect.right - voteRect.left + gapToVote));
+    var available = Math.max(0,  Math.round(viewRect.width - left - right));
+    var voteH     = Math.max(1,  voteRect.height);
+    var height    = Math.max(14, Math.round(voteH * LAYOUT.heightRatio));
+    var bottom    = Math.max(0,  Math.round(viewRect.bottom - (voteRect.top + voteH / 2) - height / 2));
+    var voteFont  = parseFloat(getComputedStyle(vote).fontSize) || 20;
+    var font      = Math.max(LAYOUT.minFont, Math.min(voteFont * LAYOUT.fontRatio, available / LAYOUT.fontFitDivisor));
+    var pad       = Math.max(4, Math.min(12, available / 26));
 
     holder.classList.toggle("is--compact", available < LAYOUT.compactWidth);
-    holder.classList.toggle("is--tight", available < LAYOUT.tightWidth);
-    holder.classList.toggle("is--icons", available < LAYOUT.iconsWidth);
+    holder.classList.toggle("is--tight",   available < LAYOUT.tightWidth);
+    holder.classList.toggle("is--icons",   available < LAYOUT.iconsWidth);
 
-    holder.style.setProperty("--sr-left", left + "px");
-    holder.style.setProperty("--sr-bottom", bottom + "px");
-    holder.style.setProperty("--sr-height", height + "px");
-    holder.style.setProperty("--sr-gap", gap + "px");
-    holder.style.setProperty("--sr-pad", pad + "px");
+    holder.style.setProperty("--sr-left",      left   + "px");
+    holder.style.setProperty("--sr-bottom",    bottom + "px");
+    holder.style.setProperty("--sr-height",    height + "px");
+    holder.style.setProperty("--sr-gap",       gap    + "px");
+    holder.style.setProperty("--sr-pad",       pad    + "px");
     holder.style.setProperty("--sr-inner-gap", Math.max(1, Math.round(gap * 0.7)) + "px");
-    holder.style.setProperty("--sr-font", font + "px");
+    holder.style.setProperty("--sr-font",      font   + "px");
     holder.style.right = right + "px";
   }
 
@@ -239,12 +215,12 @@
 
     if (!view || !vote) return;
 
-    var key = gridCardKey(card);
+    var key   = gridCardKey(card);
     var items = topItems(key);
     var holder = view.querySelector(".card__smile-reactions");
     var alreadyRendered = holder &&
       holder.dataset.smileReactionsVersion === VERSION &&
-      holder.dataset.smileReactionsKey === key &&
+      holder.dataset.smileReactionsKey     === key &&
       holder.querySelectorAll(".card__smile-reaction").length === items.length;
 
     if (!holder) {
@@ -257,14 +233,14 @@
 
     if (alreadyRendered) return;
 
-    holder.dataset.smileReactionsKey = key;
+    holder.dataset.smileReactionsKey     = key;
     holder.dataset.smileReactionsVersion = VERSION;
     holder.innerHTML = "";
 
     items.forEach(function (record) {
-      var item = record.item;
-      var chip = document.createElement("div");
-      var icon = document.createElement("img");
+      var item  = record.item;
+      var chip  = document.createElement("div");
+      var icon  = document.createElement("img");
       var count = document.createElement("span");
 
       chip.className = "card__smile-reaction card__smile-reaction--" + item.type;
@@ -273,7 +249,7 @@
       icon.className = "card__smile-reaction-emoji";
       loadReactionIcon(icon, item);
 
-      count.className = "card__smile-reaction-count";
+      count.className   = "card__smile-reaction-count";
       count.textContent = numberShort(record.count);
 
       chip.appendChild(icon);
@@ -282,37 +258,93 @@
     });
   }
 
-  // Patch Extensions screen cards that belong to this plugin.
-  // Works by scanning .extensions__item elements whose descr contains our URL.
+  // ---------------------------------------------------------------------------
+  // Plugin card name patch (Extensions screen)
+  // ---------------------------------------------------------------------------
+
+  // Lampa shows the plugin card name from the stored plugins array entry.
+  // We patch both:
+  //   1. Lampa.Plugins._loaded (in-memory) via .get() references
+  //   2. localStorage directly as a persistent fallback
+  // This runs once on boot.
+  function updatePluginEntry() {
+    if (!window.Lampa) return;
+
+    try {
+      var patched = false;
+
+      if (Lampa.Plugins && typeof Lampa.Plugins.get === "function") {
+        Lampa.Plugins.get().forEach(function (plug) {
+          if (typeof plug !== "object") return;
+          var base = (plug.url || "").split("?")[0];
+          if (PLUGIN_URLS.indexOf(base) === -1) return;
+          plug.name   = PLUGIN_NAME;
+          plug.author = "@mrkvka";
+          plug.descr  = "Реакции \uD83D\uDD25\uD83D\uDC4D\uD83D\uDCA9 на постерах. v" + VERSION;
+          patched = true;
+        });
+        if (patched && typeof Lampa.Plugins.save === "function") Lampa.Plugins.save();
+      }
+
+      // Also write to localStorage so the name persists across restarts
+      // and covers Lampa builds that don't expose Lampa.Plugins.
+      var stored;
+      try { stored = JSON.parse(localStorage.getItem("plugins") || "[]"); } catch (e) { stored = []; }
+
+      if (Array.isArray(stored)) {
+        var lsPatched = false;
+        stored.forEach(function (plug) {
+          if (typeof plug !== "object") return;
+          var base = (plug.url || "").split("?")[0];
+          if (PLUGIN_URLS.indexOf(base) === -1) return;
+          plug.name   = PLUGIN_NAME;
+          plug.author = "@mrkvka";
+          plug.descr  = "Реакции \uD83D\uDD25\uD83D\uDC4D\uD83D\uDCA9 на постерах. v" + VERSION;
+          lsPatched = true;
+        });
+        if (lsPatched) {
+          try { localStorage.setItem("plugins", JSON.stringify(stored)); } catch (e) {}
+        }
+      }
+    } catch (e) {}
+  }
+
+  // Direct DOM patch for the Extensions screen — fires via MutationObserver
+  // whenever .extensions__item cards appear in the DOM.
+  // Identifies our card by matching the URL shown in the descr element.
   function patchExtensionsDom() {
-    var items = document.querySelectorAll(".extensions__item");
+    var items = document.querySelectorAll(".extensions__item:not([data-smile-patched])");
+    if (!items.length) return;
 
     for (var i = 0; i < items.length; i++) {
-      var item   = items[i];
+      var item     = items[i];
       var descrEl  = item.querySelector(".extensions__item-descr");
       var nameEl   = item.querySelector(".extensions__item-name");
       var authorEl = item.querySelector(".extensions__item-author");
 
+      item.dataset.smilePatched = "1";
+
       if (!descrEl || !nameEl) continue;
-      if (nameEl.dataset.smilePatched) continue;
 
-      var descr = descrEl.textContent || descrEl.innerText || "";
-      var match = false;
-
+      var descr = descrEl.textContent || "";
+      var isOurs = false;
       for (var j = 0; j < PLUGIN_URLS.length; j++) {
-        if (descr.indexOf(PLUGIN_URLS[j].replace(/^https?:\/\//, "")) >= 0) {
-          match = true;
+        if (descr.indexOf(PLUGIN_URLS[j].replace(/^https?:\/\//, "")) !== -1) {
+          isOurs = true;
           break;
         }
       }
 
-      if (match) {
+      if (isOurs) {
         nameEl.textContent = PLUGIN_NAME;
-        nameEl.dataset.smilePatched = "1";
-        if (authorEl && authorEl.textContent === "@lampa") authorEl.textContent = "@mrkvka";
+        if (authorEl) authorEl.textContent = "@mrkvka";
       }
     }
   }
+
+  // ---------------------------------------------------------------------------
+  // Main render loop
+  // ---------------------------------------------------------------------------
 
   function render() {
     injectStyles();
@@ -321,140 +353,48 @@
   }
 
   function scheduleRender() {
-    clearTimeout(scheduleRender.timer);
-    scheduleRender.timer = setTimeout(render, 80);
+    clearTimeout(scheduleRender._t);
+    scheduleRender._t = setTimeout(render, 80);
   }
 
-  // Known URLs this plugin is served from. Used as fallback when
-  // document.currentScript is null (async script tag — common in Lampa).
-  var PLUGIN_URLS = [
-    'https://mrkvka.github.io/s.js',
-    'http://mrkvka.github.io/s.js'
-  ];
-
-  function pluginUrlMatches(plugUrl) {
-    var plugBase = (plugUrl || '').split('?')[0];
-    var srcBase  = _scriptSrc.split('?')[0];
-
-    if (srcBase && plugBase === srcBase) return true;
-
-    for (var i = 0; i < PLUGIN_URLS.length; i++) {
-      if (plugBase === PLUGIN_URLS[i]) return true;
-    }
-
-    return false;
-  }
-
-  function patchPluginData(plug) {
-    plug.name   = PLUGIN_NAME;
-    plug.author = '@mrkvka';
-    plug.descr  = 'Реакции 🔥👍💩 на постерах. v' + VERSION;
-  }
-
-  // Patch both the in-memory _loaded array (via Lampa.Plugins.get() refs so
-  // the already-constructed Extension Item cards pick it up) AND localStorage
-  // directly so the name survives restarts even on Lampa builds that expose a
-  // different API surface.
-  function updatePluginEntry() {
-    if (!window.Lampa) return;
-
-    try {
-      // --- 1. In-memory patch via Lampa.Plugins ---
-      if (Lampa.Plugins && typeof Lampa.Plugins.get === 'function') {
-        var memList = Lampa.Plugins.get();
-
-        if (Array.isArray(memList)) {
-          var memUpdated = false;
-
-          memList.forEach(function (plug) {
-            if (typeof plug === 'object' && pluginUrlMatches(plug.url)) {
-              patchPluginData(plug);
-              memUpdated = true;
-            }
-          });
-
-          if (memUpdated && typeof Lampa.Plugins.save === 'function') {
-            Lampa.Plugins.save();
-          }
-        }
-      }
-
-      // --- 2. localStorage fallback (survives restarts & covers edge cases) ---
-      var raw = '';
-      try { raw = localStorage.getItem('plugins') || '[]'; } catch (e) { raw = '[]'; }
-
-      var stored;
-      try { stored = JSON.parse(raw); } catch (e) { stored = []; }
-
-      if (Array.isArray(stored)) {
-        var lsUpdated = false;
-
-        stored.forEach(function (plug) {
-          if (typeof plug === 'object' && pluginUrlMatches(plug.url)) {
-            patchPluginData(plug);
-            lsUpdated = true;
-          }
-        });
-
-        if (lsUpdated) {
-          try { localStorage.setItem('plugins', JSON.stringify(stored)); } catch (e) {}
-
-          if (Lampa.Storage && typeof Lampa.Storage.set === 'function') {
-            try { Lampa.Storage.set('plugins', stored); } catch (e) {}
-          }
-        }
-      }
-    } catch (e) {}
-  }
+  // ---------------------------------------------------------------------------
+  // Manifest registration
+  // ---------------------------------------------------------------------------
 
   function setManifest() {
-    if (window.Lampa && Lampa.Manifest) {
-      Lampa.Manifest.plugins = manifest;
-      manifestReady = true;
-      updatePluginEntry();
-      return true;
-    }
-
-    return false;
+    if (!(window.Lampa && Lampa.Manifest)) return false;
+    Lampa.Manifest.plugins = manifest;
+    manifestReady = true;
+    updatePluginEntry();
+    return true;
   }
 
   function waitManifest() {
-    var attempts = 0;
-
     if (setManifest()) return;
-
+    var attempts = 0;
     var timer = setInterval(function () {
-      attempts++;
-
-      if (setManifest() || attempts > 80) {
-        clearInterval(timer);
-      }
+      if (setManifest() || ++attempts > 80) clearInterval(timer);
     }, 250);
   }
 
+  // ---------------------------------------------------------------------------
+  // Boot
+  // ---------------------------------------------------------------------------
+
   function start() {
     if (!manifestReady) waitManifest();
-    if (observerStarted) {
-      render();
-      return;
-    }
 
+    if (observerStarted) { render(); return; }
     observerStarted = true;
 
-    var observer = new MutationObserver(function () {
-      scheduleRender();
-    });
-
-    observer.observe(document.body, {
+    new MutationObserver(scheduleRender).observe(document.body, {
       childList: true,
-      subtree: true,
-      characterData: true,
-      attributes: true
+      subtree:   true
     });
 
     if (!resizeBound) {
       resizeBound = true;
-      window.addEventListener("resize", scheduleRender);
+      window.addEventListener("resize",            scheduleRender);
       window.addEventListener("orientationchange", scheduleRender);
     }
 
@@ -462,16 +402,10 @@
   }
 
   function boot() {
-    if (window.appready) {
-      start();
-    } else if (window.Lampa && Lampa.Listener) {
-      Lampa.Listener.follow("app", function (event) {
-        if (event.type === "ready") start();
-      });
-      start();
-    } else {
-      start();
+    if (window.Lampa && Lampa.Listener) {
+      Lampa.Listener.follow("app", function (e) { if (e.type === "ready") start(); });
     }
+    start();
   }
 
   if (document.body) boot();
