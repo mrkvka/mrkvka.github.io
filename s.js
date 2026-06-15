@@ -5,7 +5,7 @@
   // synchronously during script execution.
   var _scriptSrc = document.currentScript ? document.currentScript.src : '';
 
-  var VERSION = "1.6.4";
+  var VERSION = "1.6.5";
   var PLUGIN_NAME = "Смайлики рейтинга";
 
   if (window.__smileReactionsPluginVersion === VERSION) return;
@@ -25,9 +25,10 @@
     component: "smile_reactions"
   };
 
-  // Synchronous manifest registration — covers versions that read Lampa.Manifest.plugins.
+  // Early Lampa.Manifest.plugins registration (does NOT set manifestReady so
+  // that start() still calls waitManifest() → setManifest() → updatePluginEntry()).
   if (window.Lampa && Lampa.Manifest) {
-    try { Lampa.Manifest.plugins = manifest; manifestReady = true; } catch (e) {}
+    try { Lampa.Manifest.plugins = manifest; } catch (e) {}
   }
 
   var LAYOUT = {
