@@ -5,7 +5,7 @@
   // synchronously during script execution.
   var _scriptSrc = document.currentScript ? document.currentScript.src : '';
 
-  var VERSION = "1.6.2";
+  var VERSION = "1.6.3";
   var PLUGIN_NAME = "Смайлики рейтинга";
 
   if (window.__smileReactionsPluginVersion === VERSION) return;
@@ -291,14 +291,22 @@
     scheduleRender.timer = setTimeout(render, 80);
   }
 
-  // Write name/author/descr directly into Lampa's plugins storage array so the
-  // plugin manager card shows them.  Lampa stores each plugin as
-  // {url, status, name?, author?, descr?} — the card reads data.name etc.
+  // Patch the plugin's own entry in Lampa's in-memory plugins list so the
+  // Extensions card shows name/author/descr.
+  //
+  // Why not Lampa.Storage.get/set?
+  //   The Extension Item reads this.data.name — this.data is the object from
+  //   Lampa's internal _loaded array, NOT a fresh copy from localStorage.
+  //   Lampa.Plugins.get() returns _loaded.map(a=>a): a shallow copy, but the
+  //   objects themselves are the same references as in _loaded.  Mutating
+  //   plug.name here therefore mutates this.data.name in the already-created
+  //   Item, and every future Item creation also sees the updated object.
+  //   Lampa.Plugins.save() then persists the change so it survives restarts.
   function updatePluginEntry() {
-    if (!window.Lampa || !Lampa.Storage) return;
+    if (!window.Lampa || !Lampa.Plugins) return;
 
     try {
-      var list = Lampa.Storage.get('plugins', '[]');
+      var list = Lampa.Plugins.get();
 
       if (!Array.isArray(list) || !list.length) return;
 
@@ -316,7 +324,7 @@
         }
       });
 
-      if (updated) Lampa.Storage.set('plugins', list);
+      if (updated) Lampa.Plugins.save();
     } catch (e) {}
   }
 
