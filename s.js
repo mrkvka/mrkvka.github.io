@@ -5,7 +5,7 @@
   // synchronously during script execution.
   var _scriptSrc = document.currentScript ? document.currentScript.src : '';
 
-  var VERSION = "1.6.3";
+  var VERSION = "1.6.4";
   var PLUGIN_NAME = "Смайлики рейтинга";
 
   if (window.__smileReactionsPluginVersion === VERSION) return;
@@ -291,40 +291,85 @@
     scheduleRender.timer = setTimeout(render, 80);
   }
 
-  // Patch the plugin's own entry in Lampa's in-memory plugins list so the
-  // Extensions card shows name/author/descr.
-  //
-  // Why not Lampa.Storage.get/set?
-  //   The Extension Item reads this.data.name — this.data is the object from
-  //   Lampa's internal _loaded array, NOT a fresh copy from localStorage.
-  //   Lampa.Plugins.get() returns _loaded.map(a=>a): a shallow copy, but the
-  //   objects themselves are the same references as in _loaded.  Mutating
-  //   plug.name here therefore mutates this.data.name in the already-created
-  //   Item, and every future Item creation also sees the updated object.
-  //   Lampa.Plugins.save() then persists the change so it survives restarts.
+  // Known URLs this plugin is served from. Used as fallback when
+  // document.currentScript is null (async script tag — common in Lampa).
+  var PLUGIN_URLS = [
+    'https://mrkvka.github.io/s.js',
+    'http://mrkvka.github.io/s.js'
+  ];
+
+  function pluginUrlMatches(plugUrl) {
+    var plugBase = (plugUrl || '').split('?')[0];
+    var srcBase  = _scriptSrc.split('?')[0];
+
+    if (srcBase && plugBase === srcBase) return true;
+
+    for (var i = 0; i < PLUGIN_URLS.length; i++) {
+      if (plugBase === PLUGIN_URLS[i]) return true;
+    }
+
+    return false;
+  }
+
+  function patchPluginData(plug) {
+    plug.name   = PLUGIN_NAME;
+    plug.author = '@mrkvka';
+    plug.descr  = 'Реакции 🔥👍💩 на постерах. v' + VERSION;
+  }
+
+  // Patch both the in-memory _loaded array (via Lampa.Plugins.get() refs so
+  // the already-constructed Extension Item cards pick it up) AND localStorage
+  // directly so the name survives restarts even on Lampa builds that expose a
+  // different API surface.
   function updatePluginEntry() {
-    if (!window.Lampa || !Lampa.Plugins) return;
+    if (!window.Lampa) return;
 
     try {
-      var list = Lampa.Plugins.get();
+      // --- 1. In-memory patch via Lampa.Plugins ---
+      if (Lampa.Plugins && typeof Lampa.Plugins.get === 'function') {
+        var memList = Lampa.Plugins.get();
 
-      if (!Array.isArray(list) || !list.length) return;
+        if (Array.isArray(memList)) {
+          var memUpdated = false;
 
-      var srcBase = _scriptSrc.split('?')[0];
-      var updated = false;
+          memList.forEach(function (plug) {
+            if (typeof plug === 'object' && pluginUrlMatches(plug.url)) {
+              patchPluginData(plug);
+              memUpdated = true;
+            }
+          });
 
-      list.forEach(function (plug) {
-        var plugBase = (plug.url || '').split('?')[0];
-
-        if (plugBase && srcBase && plugBase === srcBase) {
-          plug.name   = PLUGIN_NAME;
-          plug.author = '@mrkvka';
-          plug.descr  = 'Реакции 🔥👍💩 на постерах. v' + VERSION;
-          updated = true;
+          if (memUpdated && typeof Lampa.Plugins.save === 'function') {
+            Lampa.Plugins.save();
+          }
         }
-      });
+      }
 
-      if (updated) Lampa.Plugins.save();
+      // --- 2. localStorage fallback (survives restarts & covers edge cases) ---
+      var raw = '';
+      try { raw = localStorage.getItem('plugins') || '[]'; } catch (e) { raw = '[]'; }
+
+      var stored;
+      try { stored = JSON.parse(raw); } catch (e) { stored = []; }
+
+      if (Array.isArray(stored)) {
+        var lsUpdated = false;
+
+        stored.forEach(function (plug) {
+          if (typeof plug === 'object' && pluginUrlMatches(plug.url)) {
+            patchPluginData(plug);
+            lsUpdated = true;
+          }
+        });
+
+        if (lsUpdated) {
+          try { localStorage.setItem('plugins', JSON.stringify(stored)); } catch (e) {}
+
+          if (Lampa.Storage && typeof Lampa.Storage.set === 'function') {
+            try { Lampa.Storage.set('plugins', stored); } catch (e) {}
+          }
+        }
+      }
     } catch (e) {}
   }
 
