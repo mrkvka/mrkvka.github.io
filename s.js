@@ -5,7 +5,7 @@
   // synchronously during script execution.
   var _scriptSrc = document.currentScript ? document.currentScript.src : '';
 
-  var VERSION = "1.6.5";
+  var VERSION = "1.6.6";
   var PLUGIN_NAME = "Смайлики рейтинга";
 
   if (window.__smileReactionsPluginVersion === VERSION) return;
@@ -282,8 +282,41 @@
     });
   }
 
+  // Patch Extensions screen cards that belong to this plugin.
+  // Works by scanning .extensions__item elements whose descr contains our URL.
+  function patchExtensionsDom() {
+    var items = document.querySelectorAll(".extensions__item");
+
+    for (var i = 0; i < items.length; i++) {
+      var item   = items[i];
+      var descrEl  = item.querySelector(".extensions__item-descr");
+      var nameEl   = item.querySelector(".extensions__item-name");
+      var authorEl = item.querySelector(".extensions__item-author");
+
+      if (!descrEl || !nameEl) continue;
+      if (nameEl.dataset.smilePatched) continue;
+
+      var descr = descrEl.textContent || descrEl.innerText || "";
+      var match = false;
+
+      for (var j = 0; j < PLUGIN_URLS.length; j++) {
+        if (descr.indexOf(PLUGIN_URLS[j].replace(/^https?:\/\//, "")) >= 0) {
+          match = true;
+          break;
+        }
+      }
+
+      if (match) {
+        nameEl.textContent = PLUGIN_NAME;
+        nameEl.dataset.smilePatched = "1";
+        if (authorEl && authorEl.textContent === "@lampa") authorEl.textContent = "@mrkvka";
+      }
+    }
+  }
+
   function render() {
     injectStyles();
+    patchExtensionsDom();
     Array.prototype.forEach.call(document.querySelectorAll(".card"), renderGridCard);
   }
 
