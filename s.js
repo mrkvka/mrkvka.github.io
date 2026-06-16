@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  var VERSION     = "1.7.5";
+  var VERSION     = "2.0.0";
   var PLUGIN_NAME = "Смайлики рейтинга";
   var PLUGIN_ID   = "smile-reactions";
 
@@ -119,37 +119,115 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Reaction counts (deterministic pseudo-random based on card key)
+  // Reaction counts — real CUB data with hash fallback
   // ---------------------------------------------------------------------------
 
-  function countFor(key, item) {
+  // In-session cache: cubId → {fire, nice, shit}
+  var _cache = {};
+  // In-flight guard: cubId → true
+  var _fetching = {};
+
+  // Build the CUB card identifier used by the reactions API.
+  // Mirrors what Lampa does in cub.js: reactionsGet uses method + '_' + id.
+  // TV shows have data.name in the original object; movies have data.title.
+  function cubCardId(data) {
+    if (!data || !data.id) return null;
+    var method = (data.name !== undefined) ? "tv" : "movie";
+    return method + "_" + data.id;
+  }
+
+  // Pseudo-random fallback (used while fetching or when API is unavailable).
+  function hashCount(key, item) {
     return item.min + hash(key + ":" + item.type) % (item.max - item.min + 1);
   }
 
-  function topItems(key) {
+  function hashCounts(key) {
     return REACTION_ITEMS.map(function (item) {
-      return { item: item, count: countFor(key, item) };
-    }).sort(function (a, b) {
-      return b.count - a.count;
-    });
+      return { item: item, count: hashCount(key, item) };
+    }).sort(function (a, b) { return b.count - a.count; });
+  }
+
+  // Fetch real CUB reaction counts and cache them.
+  // On success, updates all rendered holders with this cubId in the DOM.
+  function fetchCubReactions(cubId) {
+    if (_cache[cubId] || _fetching[cubId]) return;
+    _fetching[cubId] = true;
+
+    var url = protocol() + cubDomain() + "/api/reactions/get/" + cubId;
+
+    // Use Lampa.Reguest if available (handles mirrors + timeout), else XHR.
+    function onSuccess(data) {
+      delete _fetching[cubId];
+      if (!data || !data.secuses || !Array.isArray(data.result)) return;
+
+      var counts = {};
+      data.result.forEach(function (r) { counts[r.type] = r.counter || 0; });
+      _cache[cubId] = counts;
+
+      applyRealCounts(cubId, counts);
+    }
+
+    function onError() { delete _fetching[cubId]; }
+
+    if (window.Lampa && Lampa.Reguest) {
+      var net = new Lampa.Reguest();
+      net.timeout(5000);
+      net.silent(url, onSuccess, onError);
+    } else {
+      var xhr = new XMLHttpRequest();
+      xhr.open("GET", url, true);
+      xhr.timeout = 5000;
+      xhr.onreadystatechange = function () {
+        if (xhr.readyState !== 4) return;
+        if (xhr.status === 200) {
+          try { onSuccess(JSON.parse(xhr.responseText)); } catch (e) { onError(); }
+        } else {
+          onError();
+        }
+      };
+      xhr.send();
+    }
+  }
+
+  // Update count text in all reaction holders tagged with this cubId.
+  function applyRealCounts(cubId, counts) {
+    var sel = ".card__smile-reactions[data-cub-id='" + cubId + "']";
+    var holders = document.querySelectorAll(sel);
+    for (var i = 0; i < holders.length; i++) {
+      var chips = holders[i].querySelectorAll(".card__smile-reaction");
+      for (var j = 0; j < chips.length; j++) {
+        var m = chips[j].className.match(/card__smile-reaction--(\w+)/);
+        if (!m) continue;
+        var t = m[1];
+        var val = counts[t];
+        if (val === undefined) continue;
+        var countEl = chips[j].querySelector(".card__smile-reaction-count");
+        if (countEl) countEl.textContent = numberShort(val);
+      }
+    }
+  }
+
+  // Resolve top-3 reactions to display.
+  // Uses real CUB counts if cached; falls back to hash-based placeholder.
+  function resolvedItems(cubId, fallbackKey) {
+    var cached = cubId ? _cache[cubId] : null;
+
+    if (cached) {
+      // Pick top-3 from our known reaction types by real count.
+      return REACTION_ITEMS.map(function (item) {
+        return { item: item, count: cached[item.type] || 0 };
+      }).sort(function (a, b) { return b.count - a.count; });
+    }
+
+    return hashCounts(fallbackKey);
   }
 
   // ---------------------------------------------------------------------------
   // Card rendering
   // ---------------------------------------------------------------------------
 
-  function gridCardKey(card) {
-    // Lampa sets card.card_data = movie data object in the card module.
-    // data.id is the TMDB numeric ID — unique, stable, the same for the
-    // same movie regardless of which page or card style renders it.
-    // Prefix with 't' for TV shows (data.name present) vs 'm' for movies
-    // so TMDB movie #1396 and TV show #1396 don't collide.
-    var data = card.card_data;
-    if (data && data.id) {
-      return (data.name !== undefined ? "t" : "m") + data.id;
-    }
-
-    // Fallback: title text (for cards that don't have card_data attached).
+  // Fallback hash key when card_data is unavailable.
+  function gridCardFallbackKey(card) {
     var title = card.querySelector(".card__title");
     return title ? title.textContent.trim() : "";
   }
@@ -215,16 +293,19 @@
     var title = card.querySelector(".card__title");
 
     // Wide-style cards (detail view header) have .card__title removed by Lampa.
-    // Without a title the key is "" — all such cards share one hash and show
-    // wrong counts.  Skip them: the plugin only targets feed/list cards.
+    // Skip them — plugin only targets feed/list cards.
     if (!view || !vote || !title) return;
 
-    var key   = gridCardKey(card);
-    var items = topItems(key);
+    var data    = card.card_data || null;
+    var cubId   = cubCardId(data);
+    var fbKey   = cubId || gridCardFallbackKey(card);
+    var items   = resolvedItems(cubId, fbKey);
+
     var holder = view.querySelector(".card__smile-reactions");
     var alreadyRendered = holder &&
       holder.dataset.smileReactionsVersion === VERSION &&
-      holder.dataset.smileReactionsKey     === key &&
+      holder.dataset.smileCubId            === (cubId || "") &&
+      holder.dataset.smileKey              === fbKey &&
       holder.querySelectorAll(".card__smile-reaction").length === items.length;
 
     if (!holder) {
@@ -237,8 +318,11 @@
 
     if (alreadyRendered) return;
 
-    holder.dataset.smileReactionsKey     = key;
     holder.dataset.smileReactionsVersion = VERSION;
+    holder.dataset.smileCubId            = cubId || "";
+    holder.dataset.smileKey              = fbKey;
+    if (cubId) holder.setAttribute("data-cub-id", cubId);
+
     holder.innerHTML = "";
 
     items.forEach(function (record) {
@@ -260,6 +344,10 @@
       chip.appendChild(count);
       holder.appendChild(chip);
     });
+
+    // Kick off real CUB fetch if not already cached.
+    // When it completes, applyRealCounts() updates the DOM in-place.
+    if (cubId && !_cache[cubId]) fetchCubReactions(cubId);
   }
 
   // ---------------------------------------------------------------------------
