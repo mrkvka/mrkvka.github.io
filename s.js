@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  var VERSION     = "1.7.3";
+  var VERSION     = "1.7.4";
   var PLUGIN_NAME = "Смайлики рейтинга";
   var PLUGIN_ID   = "smile-reactions";
 
@@ -202,10 +202,14 @@
   }
 
   function renderGridCard(card) {
-    var view = card.querySelector(".card__view");
-    var vote = card.querySelector(".card__vote");
+    var view  = card.querySelector(".card__view");
+    var vote  = card.querySelector(".card__vote");
+    var title = card.querySelector(".card__title");
 
-    if (!view || !vote) return;
+    // Wide-style cards (detail view header) have .card__title removed by Lampa.
+    // Without a title the key is "" — all such cards share one hash and show
+    // wrong counts.  Skip them: the plugin only targets feed/list cards.
+    if (!view || !vote || !title) return;
 
     var key   = gridCardKey(card);
     var items = topItems(key);
