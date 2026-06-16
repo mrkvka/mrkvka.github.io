@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  var VERSION     = "1.7.1";
+  var VERSION     = "1.7.2";
   var PLUGIN_NAME = "Смайлики рейтинга";
   var PLUGIN_ID   = "smile-reactions";
 
@@ -144,13 +144,16 @@
     var vote  = card.querySelector(".card__vote");
     var image = card.querySelector(".card__img");
 
-    // Key is based only on card content — no URL — so the same movie always
-    // gets the same counts regardless of which page it appears on.
+    // Normalize the poster URL to just the filename so different TMDB size
+    // variants (w300, w500, w780…) of the same image map to the same key.
+    var src = image ? (image.getAttribute("src") || "") : "";
+    var imgKey = src.split("/").pop().split("?")[0];
+
     return [
       title ? title.textContent.trim() : "",
       age   ? age.textContent.trim()   : "",
       vote  ? vote.textContent.trim()  : "",
-      image ? image.getAttribute("src") || "" : ""
+      imgKey
     ].join("|");
   }
 
