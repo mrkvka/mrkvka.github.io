@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  var VERSION     = "1.7.4";
+  var VERSION     = "1.7.5";
   var PLUGIN_NAME = "Смайлики рейтинга";
   var PLUGIN_ID   = "smile-reactions";
 
@@ -139,10 +139,18 @@
   // ---------------------------------------------------------------------------
 
   function gridCardKey(card) {
+    // Lampa sets card.card_data = movie data object in the card module.
+    // data.id is the TMDB numeric ID — unique, stable, the same for the
+    // same movie regardless of which page or card style renders it.
+    // Prefix with 't' for TV shows (data.name present) vs 'm' for movies
+    // so TMDB movie #1396 and TV show #1396 don't collide.
+    var data = card.card_data;
+    if (data && data.id) {
+      return (data.name !== undefined ? "t" : "m") + data.id;
+    }
+
+    // Fallback: title text (for cards that don't have card_data attached).
     var title = card.querySelector(".card__title");
-    // Use only the title — it's the only field guaranteed to be identical
-    // across all views (feed, search, detail card). Vote formatting and
-    // image URLs differ between contexts and produce different counts.
     return title ? title.textContent.trim() : "";
   }
 
