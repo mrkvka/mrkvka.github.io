@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  var VERSION     = "1.7.2";
+  var VERSION     = "1.7.3";
   var PLUGIN_NAME = "Смайлики рейтинга";
   var PLUGIN_ID   = "smile-reactions";
 
@@ -140,21 +140,10 @@
 
   function gridCardKey(card) {
     var title = card.querySelector(".card__title");
-    var age   = card.querySelector(".card__age");
-    var vote  = card.querySelector(".card__vote");
-    var image = card.querySelector(".card__img");
-
-    // Normalize the poster URL to just the filename so different TMDB size
-    // variants (w300, w500, w780…) of the same image map to the same key.
-    var src = image ? (image.getAttribute("src") || "") : "";
-    var imgKey = src.split("/").pop().split("?")[0];
-
-    return [
-      title ? title.textContent.trim() : "",
-      age   ? age.textContent.trim()   : "",
-      vote  ? vote.textContent.trim()  : "",
-      imgKey
-    ].join("|");
+    // Use only the title — it's the only field guaranteed to be identical
+    // across all views (feed, search, detail card). Vote formatting and
+    // image URLs differ between contexts and produce different counts.
+    return title ? title.textContent.trim() : "";
   }
 
   function injectStyles() {
