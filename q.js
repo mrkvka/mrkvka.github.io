@@ -1,14 +1,15 @@
 (function () {
   "use strict";
 
-  var VERSION = "1.2.0";
+  var VERSION = "1.3.0";
 
   if (window.__quick720PluginVersion === VERSION) return;
   window.__quick720PluginVersion = VERSION;
   window.__quick720PluginLoaded = true;
 
   var PLUGIN_ID = "quick720";
-  // 0 = 720p (приоритет), 1 = 1080p, 2 = 480p/SD. 4K не берём.
+  var STORAGE_PRIORITY = "quick720_priority";
+  // 0 = 720p, 1 = 1080p, 2 = 480p/SD. 4K не берём.
   var TIER_720 = 0;
   var TIER_1080 = 1;
   var TIER_480 = 2;
@@ -33,8 +34,8 @@
   var manifest = {
     type: "video",
     version: VERSION,
-    name: "Быстрый запуск 720p",
-    description: "Только фильмы: приоритет 720p, иначе 1080p или 480p. Сериалы игнорируются.",
+    name: "Смотреть сразу",
+    description: "Только фильмы. Приоритет качества в настройках, сериалы игнорируются.",
     component: PLUGIN_ID
   };
 
@@ -203,6 +204,34 @@
     });
   }
 
+  function preferredKey() {
+    var val = "720";
+    try {
+      if (Lampa.Storage && Lampa.Storage.field) val = Lampa.Storage.field(STORAGE_PRIORITY) || "720";
+      else if (Lampa.Storage && Lampa.Storage.get) val = Lampa.Storage.get(STORAGE_PRIORITY, "720");
+    } catch (e) {}
+    val = String(val || "720");
+    if (val !== "720" && val !== "1080" && val !== "480") return "720";
+    return val;
+  }
+
+  function preferredOrder() {
+    var pref = preferredKey();
+    if (pref === "1080") return [TIER_1080, TIER_720, TIER_480];
+    if (pref === "480") return [TIER_480, TIER_720, TIER_1080];
+    return [TIER_720, TIER_1080, TIER_480];
+  }
+
+  function preferredOrderLabel() {
+    return preferredOrder()
+      .map(function (tier) {
+        if (tier === TIER_720) return "720";
+        if (tier === TIER_1080) return "1080";
+        return "480";
+      })
+      .join(" → ");
+  }
+
   function filterCandidates(results) {
     var list = (results && results.Results) || results || [];
     if (!Array.isArray(list)) list = [];
@@ -219,10 +248,11 @@
       buckets[tier].push(item);
     });
 
-    // Сначала все 720p (лучшие), потом 1080p, потом 480p
-    return sortBest(buckets[TIER_720])
-      .concat(sortBest(buckets[TIER_1080]))
-      .concat(sortBest(buckets[TIER_480]));
+    var out = [];
+    preferredOrder().forEach(function (tier) {
+      out = out.concat(sortBest(buckets[tier]));
+    });
+    return out;
   }
 
   function searchQuery(movie) {
@@ -516,7 +546,7 @@
       if (Lampa.Parser.clear) Lampa.Parser.clear();
     });
 
-    setLoadingText("Ищу раздачи (720 → 1080 → 480)");
+    setLoadingText("Ищу раздачи (" + preferredOrderLabel() + ")");
 
     var search = searchQuery(movie);
     var params = {
@@ -552,7 +582,7 @@
 
   function switchSource() {
     if (!state.session && !state.candidates.length) {
-      noty("Сначала запусти фильм кнопкой 720p");
+      noty("Сначала запусти фильм кнопкой «Смотреть сразу»");
       return;
     }
 
@@ -647,7 +677,7 @@
       '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">',
       '<path d="M8 5v14l11-7L8 5z" fill="currentColor"/>',
       "</svg>",
-      "<span>Смотреть 720p</span>",
+      "<span>Смотреть сразу</span>",
       "</div>"
     ].join("");
   }
@@ -722,15 +752,47 @@
     } catch (err) {}
   }
 
+  function registerSettings() {
+    if (!(Lampa.SettingsApi && Lampa.SettingsApi.addComponent && Lampa.SettingsApi.addParam)) return;
+
+    try {
+      Lampa.SettingsApi.addComponent({
+        component: PLUGIN_ID,
+        name: "Смотреть сразу",
+        icon:
+          '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">' +
+          '<path d="M8 5v14l11-7L8 5z" fill="currentColor"/>' +
+          "</svg>"
+      });
+
+      Lampa.SettingsApi.addParam({
+        component: PLUGIN_ID,
+        param: {
+          name: STORAGE_PRIORITY,
+          type: "select",
+          values: {
+            "720": "720p",
+            "1080": "1080p",
+            "480": "480p"
+          },
+          default: "720"
+        },
+        field: {
+          name: "Приоритет качества",
+          description: "Какое качество брать первым. Если такой раздачи нет, будет следующий вариант."
+        }
+      });
+    } catch (e) {
+      console.log("[Quick720] settings failed", e);
+    }
+  }
+
   function startPlugin() {
     if (!window.Lampa) return;
 
     ensureStyle();
     ensureFloatButton();
-
-    if (Lampa.Manifest && Lampa.Manifest.plugins) {
-      // no-op; manifest kept for clarity
-    }
+    registerSettings();
 
     try {
       Lampa.Manifest.plugins = Lampa.Manifest.plugins || [];
