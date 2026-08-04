@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  var VERSION = "1.3.0";
+  var VERSION = "1.4.0";
 
   if (window.__quick720PluginVersion === VERSION) return;
   window.__quick720PluginVersion = VERSION;
@@ -9,10 +9,11 @@
 
   var PLUGIN_ID = "quick720";
   var STORAGE_PRIORITY = "quick720_priority";
-  // 0 = 720p, 1 = 1080p, 2 = 480p/SD. 4K не берём.
-  var TIER_720 = 0;
+  // Меньше = выше качество: 4K → 1080 → 720 → 480
+  var TIER_4K = 0;
   var TIER_1080 = 1;
-  var TIER_480 = 2;
+  var TIER_720 = 2;
+  var TIER_480 = 3;
   var VIDEO_EXT = [
     "mkv", "mp4", "avi", "m4v", "mov", "m2ts", "ts", "wmv", "flv", "webm", "mpg", "mpeg"
   ];
@@ -35,7 +36,7 @@
     type: "video",
     version: VERSION,
     name: "Смотреть сразу",
-    description: "Только фильмы. Приоритет качества в настройках, сериалы игнорируются.",
+    description: "Только фильмы. Приоритет качества (включая 4K). При зависании кнопка роняет качество.",
     component: PLUGIN_ID
   };
 
@@ -158,12 +159,11 @@
   function qualityTier(title) {
     var t = String(title || "");
 
-    if (/2160[pр]|4\s*k|\buhd\b/i.test(t)) return -1;
-
-    // Явный 720 без 1080/4K
-    if (/720[pр]/i.test(t) && !/1080[pр]/i.test(t)) return TIER_720;
+    if (/2160[pр]|4\s*k|\buhd\b/i.test(t)) return TIER_4K;
 
     if (/1080[pр]/i.test(t)) return TIER_1080;
+
+    if (/720[pр]/i.test(t)) return TIER_720;
 
     if (/480[pр]|576[pр]|dvdrip|dvdscr|(^|[^a-z0-9])sd([^a-z0-9]|$)/i.test(t)) return TIER_480;
 
@@ -172,9 +172,18 @@
 
   function qualityLabel(title) {
     var tier = qualityTier(title);
-    if (tier === TIER_720) return "720p";
+    if (tier === TIER_4K) return "4K";
     if (tier === TIER_1080) return "1080p";
+    if (tier === TIER_720) return "720p";
     if (tier === TIER_480) return "480p";
+    return "?";
+  }
+
+  function tierLabel(tier) {
+    if (tier === TIER_4K) return "4K";
+    if (tier === TIER_1080) return "1080";
+    if (tier === TIER_720) return "720";
+    if (tier === TIER_480) return "480";
     return "?";
   }
 
@@ -205,45 +214,41 @@
   }
 
   function preferredKey() {
-    var val = "720";
+    var val = "4k";
     try {
-      if (Lampa.Storage && Lampa.Storage.field) val = Lampa.Storage.field(STORAGE_PRIORITY) || "720";
-      else if (Lampa.Storage && Lampa.Storage.get) val = Lampa.Storage.get(STORAGE_PRIORITY, "720");
+      if (Lampa.Storage && Lampa.Storage.field) val = Lampa.Storage.field(STORAGE_PRIORITY) || "4k";
+      else if (Lampa.Storage && Lampa.Storage.get) val = Lampa.Storage.get(STORAGE_PRIORITY, "4k");
     } catch (e) {}
-    val = String(val || "720");
-    if (val !== "720" && val !== "1080" && val !== "480") return "720";
+    val = String(val || "4k").toLowerCase();
+    if (val !== "4k" && val !== "1080" && val !== "720" && val !== "480") return "4k";
     return val;
   }
 
   function preferredOrder() {
     var pref = preferredKey();
-    if (pref === "1080") return [TIER_1080, TIER_720, TIER_480];
-    if (pref === "480") return [TIER_480, TIER_720, TIER_1080];
-    return [TIER_720, TIER_1080, TIER_480];
+    if (pref === "1080") return [TIER_1080, TIER_720, TIER_480, TIER_4K];
+    if (pref === "720") return [TIER_720, TIER_480, TIER_1080, TIER_4K];
+    if (pref === "480") return [TIER_480, TIER_720, TIER_1080, TIER_4K];
+    // 4k по умолчанию: сначала 4K, при отсутствии ниже
+    return [TIER_4K, TIER_1080, TIER_720, TIER_480];
   }
 
   function preferredOrderLabel() {
-    return preferredOrder()
-      .map(function (tier) {
-        if (tier === TIER_720) return "720";
-        if (tier === TIER_1080) return "1080";
-        return "480";
-      })
-      .join(" → ");
+    return preferredOrder().map(tierLabel).join(" → ");
   }
 
   function filterCandidates(results) {
     var list = (results && results.Results) || results || [];
     if (!Array.isArray(list)) list = [];
 
-    var buckets = [[], [], []];
+    var buckets = [[], [], [], []];
 
     list.forEach(function (item) {
       if ((parseInt(item.Seeders, 10) || 0) < 1) return;
       if (!(item.MagnetUri || item.Link || item.downloadUrl)) return;
 
       var tier = qualityTier(item.Title || item.title || "");
-      if (tier < 0 || tier > 2) return;
+      if (tier < 0 || tier > 3) return;
 
       buckets[tier].push(item);
     });
@@ -253,6 +258,24 @@
       out = out.concat(sortBest(buckets[tier]));
     });
     return out;
+  }
+
+  // Для «зависло»: сразу на раздачу ниже качеством (пропускаем остальные того же тира)
+  function findDowngradeIndex(fromIndex) {
+    if (!state.candidates.length) return -1;
+
+    var cur = state.candidates[fromIndex];
+    var curTier = cur ? qualityTier(cur.Title || cur.title || "") : -1;
+
+    if (curTier >= 0) {
+      for (var i = fromIndex + 1; i < state.candidates.length; i++) {
+        var tier = qualityTier(state.candidates[i].Title || state.candidates[i].title || "");
+        if (tier > curTier) return i;
+      }
+    }
+
+    if (fromIndex + 1 < state.candidates.length) return fromIndex + 1;
+    return -1;
   }
 
   function searchQuery(movie) {
@@ -498,16 +521,19 @@
       return;
     }
 
-    if (skipCurrent) state.index += 1;
-    else if (state.index < 0) state.index = 0;
+    var nextIndex;
+    if (skipCurrent) nextIndex = findDowngradeIndex(state.index);
+    else if (state.index < 0) nextIndex = 0;
+    else nextIndex = state.index;
 
-    if (state.index >= state.candidates.length) {
+    if (nextIndex < 0 || nextIndex >= state.candidates.length) {
       state.busy = false;
       stopLoading();
       noty("Запасные раздачи закончились");
       return;
     }
 
+    state.index = nextIndex;
     state.busy = true;
     startLoading(function () {
       state.busy = false;
@@ -564,7 +590,7 @@
       if (!list.length) {
         state.busy = false;
         stopLoading();
-        noty("Нет раздач 720/1080/480 для «" + search + "»");
+        noty("Нет раздач 4K/1080/720/480 для «" + search + "»");
         return;
       }
 
@@ -591,13 +617,16 @@
       return;
     }
 
-    if (state.index + 1 >= state.candidates.length) {
-      noty("Других раздач нет");
+    var next = findDowngradeIndex(state.index);
+    if (next < 0) {
+      noty("Ниже по качеству раздач больше нет");
       return;
     }
 
     var t = currentTime();
-    noty("Меняю раздачу с " + Math.floor(t) + " сек");
+    var nextItem = state.candidates[next];
+    var nextQ = qualityLabel(nextItem && nextItem.Title);
+    noty("Роняю качество → " + nextQ + " · с " + Math.floor(t) + " сек");
 
     state.switching = true;
     state.busy = true;
@@ -615,7 +644,7 @@
       state.switching = false;
     });
 
-    state.index += 1;
+    state.index = next;
     startCandidate(state.candidates[state.index], state.movie, t);
   }
 
@@ -625,7 +654,7 @@
 
     btn = document.createElement("div");
     btn.className = "quick720-float selector";
-    btn.textContent = "Сменить если зависло";
+    btn.textContent = "Ниже качество";
     btn.addEventListener("click", function (e) {
       e.preventDefault();
       e.stopPropagation();
@@ -651,7 +680,7 @@
     var existing = panel.find(".quick720-switch");
     if (existing.length) return existing;
 
-    var btn = $('<div class="button selector quick720-switch" title="Сменить раздачу">Сменить</div>');
+    var btn = $('<div class="button selector quick720-switch" title="Ниже качество">Ниже</div>');
     btn.on("hover:enter", function () {
       switchSource();
     });
@@ -771,15 +800,16 @@
           name: STORAGE_PRIORITY,
           type: "select",
           values: {
-            "720": "720p",
+            "4k": "4K",
             "1080": "1080p",
+            "720": "720p",
             "480": "480p"
           },
-          default: "720"
+          default: "4k"
         },
         field: {
           name: "Приоритет качества",
-          description: "Какое качество брать первым. Если такой раздачи нет, будет следующий вариант."
+          description: "Какое качество брать первым. Кнопка «Ниже качество» сразу роняет на следующий уровень (4K→1080→720→480)."
         }
       });
     } catch (e) {
