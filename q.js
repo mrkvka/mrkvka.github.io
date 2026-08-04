@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  var VERSION = "1.1.0";
+  var VERSION = "1.2.0";
 
   if (window.__quick720PluginVersion === VERSION) return;
   window.__quick720PluginVersion = VERSION;
@@ -34,13 +34,29 @@
     type: "video",
     version: VERSION,
     name: "Быстрый запуск 720p",
-    description: "Смотреть с приоритетом 720p, иначе 1080p или 480p. Смена раздачи при зависании.",
+    description: "Только фильмы: приоритет 720p, иначе 1080p или 480p. Сериалы игнорируются.",
     component: PLUGIN_ID
   };
 
   function noty(text) {
     if (window.Lampa && Lampa.Noty) Lampa.Noty.show(text);
     else console.log("[Quick720]", text);
+  }
+
+  function isSeries(movie) {
+    if (!movie) return false;
+    if (movie.number_of_seasons || movie.number_of_episodes) return true;
+    if (movie.first_air_date) return true;
+    if (movie.media_type === "tv" || movie.type === "tv") return true;
+    // У сериалов в TMDB обычно name/original_name, у фильмов title/original_title
+    if ((movie.name || movie.original_name) && !(movie.title || movie.original_title || movie.release_date)) {
+      return true;
+    }
+    return false;
+  }
+
+  function isMovie(movie) {
+    return !!(movie && !isSeries(movie));
   }
 
   function ensureStyle() {
@@ -471,6 +487,11 @@
   }
 
   function searchAndPlay(movie, seekTo, keepList) {
+    if (!isMovie(movie)) {
+      noty("Плагин только для фильмов");
+      return;
+    }
+
     if (!window.Lampa || !Lampa.Parser || !Lampa.Parser.get) {
       noty("Parser недоступен");
       return;
@@ -640,9 +661,8 @@
     if (render.find(".view--quick720").length) return;
 
     var movie = (e.data && e.data.movie) || e.object.card || e.object.movie;
-    if (!movie) return;
+    if (!isMovie(movie)) return;
 
-    // сериалы тоже можно, но кнопка заточена под фильм: берём крупнейший файл
     var btn = $(buttonHtml());
     btn.on("hover:enter", function () {
       searchAndPlay(movie, 0, false);
