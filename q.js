@@ -1,16 +1,17 @@
 (function () {
   "use strict";
 
-  var VERSION = "1.0.0";
+  var VERSION = "1.1.0";
 
   if (window.__quick720PluginVersion === VERSION) return;
   window.__quick720PluginVersion = VERSION;
   window.__quick720PluginLoaded = true;
 
   var PLUGIN_ID = "quick720";
-  var QUALITY = "720p";
-  var QUALITY_RE = /720[pр]/i;
-  var EXCLUDE_RE = /(2160|4k|uhd|1080[pр])/i;
+  // 0 = 720p (приоритет), 1 = 1080p, 2 = 480p/SD. 4K не берём.
+  var TIER_720 = 0;
+  var TIER_1080 = 1;
+  var TIER_480 = 2;
   var VIDEO_EXT = [
     "mkv", "mp4", "avi", "m4v", "mov", "m2ts", "ts", "wmv", "flv", "webm", "mpg", "mpeg"
   ];
@@ -33,7 +34,7 @@
     type: "video",
     version: VERSION,
     name: "Быстрый запуск 720p",
-    description: "Большая кнопка Смотреть 720p с лучшей раздачей и сменой источника при зависании.",
+    description: "Смотреть с приоритетом 720p, иначе 1080p или 480p. Смена раздачи при зависании.",
     component: PLUGIN_ID
   };
 
@@ -137,11 +138,27 @@
 
   var BAD_SOURCE_RE = /(^|[^a-zа-я])(cam|hdcam|camrip|ts|telesync|tc|telecine|wp|workprint)([^a-zа-я]|$)/i;
 
-  function is720(title) {
+  function qualityTier(title) {
     var t = String(title || "");
-    if (!QUALITY_RE.test(t)) return false;
-    if (EXCLUDE_RE.test(t)) return false;
-    return true;
+
+    if (/2160[pр]|4\s*k|\buhd\b/i.test(t)) return -1;
+
+    // Явный 720 без 1080/4K
+    if (/720[pр]/i.test(t) && !/1080[pр]/i.test(t)) return TIER_720;
+
+    if (/1080[pр]/i.test(t)) return TIER_1080;
+
+    if (/480[pр]|576[pр]|dvdrip|dvdscr|(^|[^a-z0-9])sd([^a-z0-9]|$)/i.test(t)) return TIER_480;
+
+    return -1;
+  }
+
+  function qualityLabel(title) {
+    var tier = qualityTier(title);
+    if (tier === TIER_720) return "720p";
+    if (tier === TIER_1080) return "1080p";
+    if (tier === TIER_480) return "480p";
+    return "?";
   }
 
   function torrentKey(item) {
@@ -170,15 +187,26 @@
     });
   }
 
-  function filter720(results) {
+  function filterCandidates(results) {
     var list = (results && results.Results) || results || [];
     if (!Array.isArray(list)) list = [];
-    return sortBest(list.filter(function (item) {
-      if (!is720(item.Title || item.title || "")) return false;
-      if ((parseInt(item.Seeders, 10) || 0) < 1) return false;
-      if (!(item.MagnetUri || item.Link || item.downloadUrl)) return false;
-      return true;
-    }));
+
+    var buckets = [[], [], []];
+
+    list.forEach(function (item) {
+      if ((parseInt(item.Seeders, 10) || 0) < 1) return;
+      if (!(item.MagnetUri || item.Link || item.downloadUrl)) return;
+
+      var tier = qualityTier(item.Title || item.title || "");
+      if (tier < 0 || tier > 2) return;
+
+      buckets[tier].push(item);
+    });
+
+    // Сначала все 720p (лучшие), потом 1080p, потом 480p
+    return sortBest(buckets[TIER_720])
+      .concat(sortBest(buckets[TIER_1080]))
+      .concat(sortBest(buckets[TIER_480]));
   }
 
   function searchQuery(movie) {
@@ -314,7 +342,7 @@
 
     if (seekTo > 5) seekWhenReady(seekTo);
 
-    noty("720p · сиды " + (element.Seeders || 0) + " · " + String(element.Title || "").slice(0, 60));
+    noty(qualityLabel(element.Title) + " · сиды " + (element.Seeders || 0) + " · " + String(element.Title || "").slice(0, 60));
   }
 
   function waitFiles(hash, element, movie, seekTo) {
@@ -359,7 +387,7 @@
     if (!element) {
       state.busy = false;
       stopLoading();
-      noty("Больше подходящих 720p раздач нет");
+      noty("Больше подходящих раздач нет");
       return;
     }
 
@@ -420,7 +448,7 @@
     if (!state.candidates.length) {
       state.busy = false;
       stopLoading();
-      noty("Раздачи 720p не найдены");
+      noty("Раздачи не найдены");
       return;
     }
 
@@ -430,7 +458,7 @@
     if (state.index >= state.candidates.length) {
       state.busy = false;
       stopLoading();
-      noty("Запасные 720p раздачи закончились");
+      noty("Запасные раздачи закончились");
       return;
     }
 
@@ -467,7 +495,7 @@
       if (Lampa.Parser.clear) Lampa.Parser.clear();
     });
 
-    setLoadingText("Ищу 720p раздачи");
+    setLoadingText("Ищу раздачи (720 → 1080 → 480)");
 
     var search = searchQuery(movie);
     var params = {
@@ -480,18 +508,19 @@
     };
 
     Lampa.Parser.get(params, function (json) {
-      var list = filter720(json);
+      var list = filterCandidates(json);
 
       if (!list.length) {
         state.busy = false;
         stopLoading();
-        noty("Нет раздач 720p для «" + search + "»");
+        noty("Нет раздач 720/1080/480 для «" + search + "»");
         return;
       }
 
+      var firstQ = qualityLabel(list[0].Title);
       state.candidates = list;
       state.index = 0;
-      setLoadingText("Найдено " + list.length + " · беру лучшую");
+      setLoadingText("Найдено " + list.length + " · беру " + firstQ);
       startCandidate(list[0], movie, seekTo || 0);
     }, function (err) {
       state.busy = false;
@@ -512,7 +541,7 @@
     }
 
     if (state.index + 1 >= state.candidates.length) {
-      noty("Других 720p раздач нет");
+      noty("Других раздач нет");
       return;
     }
 
