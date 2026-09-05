@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  var VERSION = "1.6.0";
+  var VERSION = "1.7.0";
 
   if (window.__quick720PluginVersion === VERSION) return;
   window.__quick720PluginVersion = VERSION;
@@ -159,6 +159,10 @@
   }
 
   var BAD_SOURCE_RE = /(^|[^a-zа-я])(cam|hdcam|camrip|ts|telesync|tc|telecine|wp|workprint)([^a-zа-я]|$)/i;
+  var RU_STUDIO_RE = /lostfilm|newstudio|hdrezka|hdtoday|кураж[\s\-]?бамбей|кубик\s*в\s*кубе|baibako|байбако|alexfilm|jaskier|coldfilm|tvshows|novamedia|пифагор|невафильм|кинопоиск|гаврилов|горчаков|володарский|сыендук|пучков|\bgoblin\b|гоблин|любительский\s*перевод/i;
+  var RU_VOICE_RE = /дублирован|дубляж|озвучк|лицензи|многоголос|двухголос|двуголос|одноголос|закадр|авторский|itunes|\bapple\b|\bmvo\b|\bdvo\b|\bavo\b|(?:^|[\s\|\[\(\,\/])p\d?(?=[\s\|\]\),\/]|$)|(?:^|[\s\|\[\(\,\/])l[12](?=[\s\|\]\),\/]|$)|[,|\s](?:дб|лм|пм|лд|пд|ло|ап)[,|\s]|\d\s*[xх]\s*(?:rus|рус)|\b(?:rus|рус)(?:sian|ский)?(?:\b|\.)|(?:ddp|dd|aac|ac3|eac3|dts|truehd|atmos).{0,16}(?:rus|рус)|(?:rus|рус).{0,12}(?:ddp|dd|aac|ac3|eac3|dts)/i;
+  var UA_VOICE_RE = /украинск|українськ|\bukr\b|так\s*треба|незупиняй|гуртом|двоголос|цікава\s*ідея|з\s*ранку\s*до\s*ноч/i;
+  var SUBS_ONLY_RE = /только\s+субтитры|subs?\s*only|without\s+dub|без\s+(?:перевода|озвуч)|original(?:\s+audio)?\s*\+\s*(?:rus(?:sian)?\s*)?subs?|(?:rus|рус)(?:sian|ские)?\s*subs?(?:\s*only)?/i;
 
   function qualityTier(title) {
     var t = String(title || "");
@@ -205,6 +209,9 @@
     if (BAD_SOURCE_RE.test(title)) score -= 100000;
     if (/web-?dl|bluray|bdrip|remux|hdtv/i.test(title)) score += 50;
     if (size > 0 && size < 200 * 1024 * 1024) score -= 500;
+    if (/дубляж|дублирован|лицензи|itunes|пифагор|невафильм/i.test(title)) score += 80;
+    else if (/(?:^|[\s\|\[\(\,\/])p\d?(?=[\s\|\]\),\/]|$)/i.test(title) || /многоголос/i.test(title)) score += 40;
+    else if (/\bmvo\b|\bdvo\b/i.test(title)) score += 15;
 
     return score;
   }
@@ -263,10 +270,75 @@
     if (key) state.tried[key] = 1;
   }
 
+  function torrentBlob(item) {
+    var bits = [item && (item.Title || item.title)];
+    var langs = item && (item.languages || item.Languages || item.language || item.Language);
+    if (Array.isArray(langs)) bits.push(langs.join(" "));
+    else if (langs) bits.push(String(langs));
+    if (item && item.info && item.info.voices) bits.push(item.info.voices.join(" "));
+    return bits.filter(Boolean).join(" \n ");
+  }
+
+  function isRussianMovie(movie) {
+    if (!movie) return false;
+    var lang = String(movie.original_language || movie.originalLanguage || "").toLowerCase();
+    if (lang === "ru" || lang === "be") return true;
+    var orig = String(movie.original_title || movie.original_name || "");
+    return /[а-яё]{4,}/i.test(orig);
+  }
+
+  function hasLangRu(item) {
+    var langs = item && (item.languages || item.Languages || item.language || item.Language);
+    if (!langs) return false;
+    if (!Array.isArray(langs)) langs = String(langs).split(/[,;|/]+/);
+    return langs.some(function (l) {
+      var s = String(l).trim().toLowerCase();
+      return s === "ru" || s === "rus" || s.indexOf("russian") === 0 || s.indexOf("рус") === 0;
+    });
+  }
+
+  function hasCyrillic(text) {
+    return /[а-яё]/i.test(text || "");
+  }
+
+  function hasRussianVoiceMarks(text) {
+    var t = String(text || "").toLowerCase();
+    if (RU_STUDIO_RE.test(t)) return true;
+    if (RU_VOICE_RE.test(t)) return true;
+    return false;
+  }
+
+  function isSubsOnly(text) {
+    var t = String(text || "").toLowerCase();
+    if (!SUBS_ONLY_RE.test(t)) return false;
+    if (RU_STUDIO_RE.test(t)) return false;
+    if (/дубляж|дублирован|озвучк|лицензи|многоголос|itunes|\bmvo\b|\bdvo\b|\bavo\b/.test(t)) return false;
+    if (/(?:^|[\s\|\[\(\,\/])p\d?(?=[\s\|\]\),\/]|$)/.test(t)) return false;
+    return true;
+  }
+
+  function hasRussianVoice(item, movie) {
+    var text = torrentBlob(item);
+    if (!text) return false;
+    if (isSubsOnly(text)) return false;
+    if (UA_VOICE_RE.test(text) && !hasRussianVoiceMarks(text) && !hasLangRu(item)) return false;
+
+    if (hasLangRu(item)) return true;
+    if (hasRussianVoiceMarks(text)) {
+      if (/\b(?:itunes|apple|dub|mvo|dvo|avo)\b/i.test(text) && !hasCyrillic(text) && !hasLangRu(item) && !RU_STUDIO_RE.test(text)) {
+        return false;
+      }
+      return true;
+    }
+    if (isRussianMovie(movie) && !UA_VOICE_RE.test(text)) return true;
+    return false;
+  }
+
   function isPlayableTorrent(item) {
     if (!item) return false;
     if ((parseInt(item.Seeders, 10) || 0) < 1) return false;
     if (!(item.MagnetUri || item.Link || item.downloadUrl)) return false;
+    if (!hasRussianVoice(item, state.movie)) return false;
     return true;
   }
 
@@ -704,7 +776,7 @@
       if (Lampa.Parser.clear) Lampa.Parser.clear();
     });
 
-    setLoadingText("Ищу раздачи (" + preferredOrderLabel() + ")");
+    setLoadingText("Ищу раздачи с русской озвучкой (" + preferredOrderLabel() + ")");
 
     var search = searchQuery(movie);
     var params = {
@@ -723,7 +795,7 @@
       if (!list.length) {
         state.busy = false;
         stopLoading();
-        noty("Нет раздач 4K/1080/720/480 для «" + search + "»");
+        noty("Нет раздач с русской озвучкой (4K/1080/720/480) для «" + search + "»");
         return;
       }
 
