@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  var VERSION = "1.4.0";
+  var VERSION = "1.6.0";
 
   if (window.__quick720PluginVersion === VERSION) return;
   window.__quick720PluginVersion = VERSION;
@@ -9,6 +9,7 @@
 
   var PLUGIN_ID = "quick720";
   var STORAGE_PRIORITY = "quick720_priority";
+  var STORAGE_PLAYER = "quick720_player";
   // Меньше = выше качество: 4K → 1080 → 720 → 480
   var TIER_4K = 0;
   var TIER_1080 = 1;
@@ -24,6 +25,9 @@
   var state = {
     movie: null,
     candidates: [],
+    all: [],
+    tried: {},
+    external: false,
     index: -1,
     hash: "",
     seekTo: 0,
@@ -161,9 +165,9 @@
 
     if (/2160[pр]|4\s*k|\buhd\b/i.test(t)) return TIER_4K;
 
-    if (/1080[pр]/i.test(t)) return TIER_1080;
+    if (/1080[pр]|full\s*hd|\bfhd\b|1920\s*[x×]\s*1080/i.test(t)) return TIER_1080;
 
-    if (/720[pр]/i.test(t)) return TIER_720;
+    if (/720[pр]|1280\s*[x×]\s*720/i.test(t)) return TIER_720;
 
     if (/480[pр]|576[pр]|dvdrip|dvdscr|(^|[^a-z0-9])sd([^a-z0-9]|$)/i.test(t)) return TIER_480;
 
@@ -237,19 +241,72 @@
     return preferredOrder().map(tierLabel).join(" → ");
   }
 
-  function filterCandidates(results) {
+  function torrentItemKey(item) {
+    return torrentKey(item);
+  }
+
+  function itemTier(item) {
+    return qualityTier(item && (item.Title || item.title) || "");
+  }
+
+  function itemSize(item) {
+    return parseInt(item && item.Size, 10) || 0;
+  }
+
+  function alreadyTried(item) {
+    var key = torrentItemKey(item);
+    return !key || !!state.tried[key];
+  }
+
+  function markTried(item) {
+    var key = torrentItemKey(item);
+    if (key) state.tried[key] = 1;
+  }
+
+  function isPlayableTorrent(item) {
+    if (!item) return false;
+    if ((parseInt(item.Seeders, 10) || 0) < 1) return false;
+    if (!(item.MagnetUri || item.Link || item.downloadUrl)) return false;
+    return true;
+  }
+
+  function collectAll(results) {
     var list = (results && results.Results) || results || [];
     if (!Array.isArray(list)) list = [];
+    return list.filter(isPlayableTorrent);
+  }
 
+  function isLowerQuality(item, thanItem) {
+    if (!item || !thanItem) return false;
+
+    var a = itemTier(item);
+    var b = itemTier(thanItem);
+    var sa = itemSize(item);
+    var sb = itemSize(thanItem);
+
+    if (b >= 0 && a >= 0) return a > b;
+    if (sa > 0 && sb > 0 && sa < sb * 0.72) return true;
+    if (b >= 0 && a < 0 && sa > 0 && sb > 0 && sa < sb) return true;
+    return false;
+  }
+
+  function appendCandidate(item) {
+    if (!item || alreadyTried(item)) return -1;
+    var key = torrentItemKey(item);
+    for (var i = 0; i < state.candidates.length; i++) {
+      if (torrentItemKey(state.candidates[i]) === key) return i;
+    }
+    state.candidates.push(item);
+    return state.candidates.length - 1;
+  }
+
+  function filterCandidates(results) {
+    var list = collectAll(results);
     var buckets = [[], [], [], []];
 
     list.forEach(function (item) {
-      if ((parseInt(item.Seeders, 10) || 0) < 1) return;
-      if (!(item.MagnetUri || item.Link || item.downloadUrl)) return;
-
-      var tier = qualityTier(item.Title || item.title || "");
+      var tier = itemTier(item);
       if (tier < 0 || tier > 3) return;
-
       buckets[tier].push(item);
     });
 
@@ -260,21 +317,51 @@
     return out;
   }
 
-  // Для «зависло»: сразу на раздачу ниже качеством (пропускаем остальные того же тира)
+  // «Ниже»: сначала тир хуже, если его нет — соседние раздачи (в т.ч. без 720/480 в названии), что меньше текущей.
   function findDowngradeIndex(fromIndex) {
-    if (!state.candidates.length) return -1;
+    if (!state.candidates.length && !(state.all && state.all.length)) return -1;
 
-    var cur = state.candidates[fromIndex];
-    var curTier = cur ? qualityTier(cur.Title || cur.title || "") : -1;
+    var cur = state.candidates[fromIndex] || null;
+    var curTier = cur ? itemTier(cur) : -1;
+    var curKey = cur ? torrentItemKey(cur) : "";
 
     if (curTier >= 0) {
       for (var i = fromIndex + 1; i < state.candidates.length; i++) {
-        var tier = qualityTier(state.candidates[i].Title || state.candidates[i].title || "");
-        if (tier > curTier) return i;
+        if (alreadyTried(state.candidates[i])) continue;
+        if (itemTier(state.candidates[i]) > curTier) return i;
       }
     }
 
-    if (fromIndex + 1 < state.candidates.length) return fromIndex + 1;
+    var pool = state.all && state.all.length ? state.all : state.candidates;
+    if (!cur || !pool.length) return -1;
+
+    var pos = -1;
+    for (var k = 0; k < pool.length; k++) {
+      if (torrentItemKey(pool[k]) === curKey) {
+        pos = k;
+        break;
+      }
+    }
+    if (pos < 0) pos = Math.max(0, fromIndex);
+
+    var max = pool.length;
+    for (var dist = 1; dist < max; dist++) {
+      var around = [pos + dist, pos - dist];
+      for (var n = 0; n < around.length; n++) {
+        var idx = around[n];
+        if (idx < 0 || idx >= max) continue;
+        var neigh = pool[idx];
+        if (!neigh || torrentItemKey(neigh) === curKey || alreadyTried(neigh)) continue;
+        if (isLowerQuality(neigh, cur)) return appendCandidate(neigh);
+      }
+    }
+
+    for (var p = 0; p < pool.length; p++) {
+      var it = pool[p];
+      if (!it || torrentItemKey(it) === curKey || alreadyTried(it)) continue;
+      if (isLowerQuality(it, cur)) return appendCandidate(it);
+    }
+
     return -1;
   }
 
@@ -377,10 +464,31 @@
     setTimeout(trySeek, 1200);
   }
 
+  function isAndroidHost() {
+    try {
+      if (typeof AndroidJS !== "undefined") return true;
+      if (Lampa.Platform && Lampa.Platform.is && Lampa.Platform.is("android")) return true;
+    } catch (e) {}
+    return false;
+  }
+
+  function playerMode() {
+    var val = "android";
+    try {
+      if (Lampa.Storage && Lampa.Storage.field) val = Lampa.Storage.field(STORAGE_PLAYER) || "android";
+      else if (Lampa.Storage && Lampa.Storage.get) val = Lampa.Storage.get(STORAGE_PLAYER, "android");
+    } catch (e) {}
+    val = String(val || "android").toLowerCase();
+    if (val === "inner" || val === "lampa") return "inner";
+    if (isAndroidHost()) return "android";
+    return "inner";
+  }
+
   function playFile(file, element, movie, hash, seekTo) {
     var url = Lampa.Torserver.stream(file.path, hash, file.id);
     var title = movieTitle(movie) || element.Title || file.path;
     var timeline = null;
+    var mode = playerMode();
 
     try {
       if (Lampa.Timeline && Lampa.Utils) {
@@ -388,7 +496,17 @@
       }
     } catch (e) {}
 
-    if (Lampa.Player && Lampa.Player.runas) Lampa.Player.runas("lampa");
+    if (seekTo > 5 && timeline) {
+      timeline.time = seekTo;
+      timeline.duration = timeline.duration || seekTo + 1;
+      timeline.percent = timeline.duration ? Math.min(99, Math.round((seekTo / timeline.duration) * 100)) : 0;
+    }
+
+    try {
+      if (Lampa.Torserver && Lampa.Torserver.toPlayUrl) url = Lampa.Torserver.toPlayUrl(url) || url;
+    } catch (e2) {}
+
+    if (Lampa.Player && Lampa.Player.runas) Lampa.Player.runas(mode === "android" ? "android" : "lampa");
 
     var play = {
       title: title,
@@ -400,6 +518,7 @@
 
     state.hash = hash;
     state.session = true;
+    state.external = mode === "android";
     state.switching = false;
     state.seekTo = seekTo || 0;
     showSwitchUi(true);
@@ -409,9 +528,18 @@
     Lampa.Player.play(play);
     Lampa.Player.playlist([play]);
 
-    if (seekTo > 5) seekWhenReady(seekTo);
+    if (Lampa.Player && Lampa.Player.runas) Lampa.Player.runas("");
 
-    noty(qualityLabel(element.Title) + " · сиды " + (element.Seeders || 0) + " · " + String(element.Title || "").slice(0, 60));
+    if (mode === "inner" && seekTo > 5) seekWhenReady(seekTo);
+
+    noty(
+      (mode === "android" ? "Внешний плеер · " : "") +
+        qualityLabel(element.Title) +
+        " · сиды " +
+        (element.Seeders || 0) +
+        " · " +
+        String(element.Title || "").slice(0, 60)
+    );
   }
 
   function waitFiles(hash, element, movie, seekTo) {
@@ -459,6 +587,8 @@
       noty("Больше подходящих раздач нет");
       return;
     }
+
+    markTried(element);
 
     var link = element.MagnetUri || element.Link || element.downloadUrl;
     if (!link) {
@@ -564,6 +694,8 @@
 
     if (!keepList) {
       state.candidates = [];
+      state.all = [];
+      state.tried = {};
       state.index = -1;
     }
 
@@ -585,6 +717,7 @@
     };
 
     Lampa.Parser.get(params, function (json) {
+      state.all = collectAll(json);
       var list = filterCandidates(json);
 
       if (!list.length) {
@@ -619,14 +752,21 @@
 
     var next = findDowngradeIndex(state.index);
     if (next < 0) {
-      noty("Ниже по качеству раздач больше нет");
+      noty("Других раздач ниже по качеству нет");
       return;
     }
 
     var t = currentTime();
     var nextItem = state.candidates[next];
     var nextQ = qualityLabel(nextItem && nextItem.Title);
-    noty("Роняю качество → " + nextQ + " · с " + Math.floor(t) + " сек");
+    var sameTier = nextItem && itemTier(nextItem) === itemTier(state.candidates[state.index]);
+    noty(
+      (sameTier ? "Соседняя раздача " : "Роняю качество → ") +
+        nextQ +
+        " · с " +
+        Math.floor(t) +
+        " сек"
+    );
 
     state.switching = true;
     state.busy = true;
@@ -746,11 +886,22 @@
       if (state.seekTo > 5) seekWhenReady(state.seekTo);
     });
 
-    Lampa.Player.listener.follow("destroy", function () {
-      showSwitchUi(false);
+    Lampa.Player.listener.follow("external", function () {
+      if (!state.session) return;
+      state.busy = false;
+      showSwitchUi(true);
+    });
 
+    Lampa.Player.listener.follow("destroy", function () {
       if (state.switching) return;
 
+      if (state.external) {
+        state.busy = false;
+        showSwitchUi(true);
+        return;
+      }
+
+      showSwitchUi(false);
       state.session = false;
       state.busy = false;
     });
@@ -809,7 +960,24 @@
         },
         field: {
           name: "Приоритет качества",
-          description: "Какое качество брать первым. Кнопка «Ниже качество» сразу роняет на следующий уровень (4K→1080→720→480)."
+          description: "Какое качество брать первым. «Ниже» сначала ищет тир хуже (4K→1080→720→480). Если его нет — соседние раздачи меньшего размера."
+        }
+      });
+
+      Lampa.SettingsApi.addParam({
+        component: PLUGIN_ID,
+        param: {
+          name: STORAGE_PLAYER,
+          type: "select",
+          values: {
+            android: "Внешний (Just Player / VLC) — есть звук",
+            inner: "Встроенный Lampa — часто без звука (AC3/DTS)"
+          },
+          default: "android"
+        },
+        field: {
+          name: "Плеер",
+          description: "Встроенный плеер Lampa на Android не декодирует AC3/DTS. Внешний открывает поток TorrServer в Just Player (уже стоит) или VLC."
         }
       });
     } catch (e) {
